@@ -5,6 +5,14 @@ interface Slide {
   arguments: string[];
 }
 
+// 检测是否为超时错误
+function isTimeoutError(error: any): boolean {
+  return error.name === 'AbortError' ||
+         error.message?.includes('timeout') ||
+         error.message?.includes('aborted') ||
+         error.message?.includes('The operation was aborted');
+}
+
 // 智能回退解析函数
 function smartFallbackParsing(text: string): Slide[] {
   const lines = text.split('\n').filter(line => line.trim());
@@ -189,6 +197,10 @@ ${text}
       try {
         const startTime = Date.now();
 
+        // 创建超时控制器
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 55000); // 55秒超时
+
         const response = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
           method: 'POST',
           headers: {
@@ -206,8 +218,11 @@ ${text}
             temperature: 0.3,
             max_tokens: 2000,
             stream: false
-          })
+          }),
+          signal: controller.signal
         });
+
+        clearTimeout(timeoutId); // 清除超时计时器
 
         const endTime = Date.now();
         console.log('⏱️ 直接GLM API响应时间:', endTime - startTime, 'ms');
@@ -237,7 +252,12 @@ ${text}
         }
       } catch (directError) {
         console.error('❌ 直接GLM API调用异常:', directError);
-        apiCallTime = '❌ 直接API调用异常';
+        if (isTimeoutError(directError)) {
+          console.log('⏰ API调用超时，将使用智能回退解析');
+          apiCallTime = '⏰ API调用超时，使用智能回退';
+        } else {
+          apiCallTime = '❌ 直接API调用异常';
+        }
       }
     } else {
       // 本地环境：使用代理服务
@@ -247,6 +267,10 @@ ${text}
         const baseUrl = process.env.VERCEL_URL
           ? `https://${process.env.VERCEL_URL}`
           : 'http://localhost:3000';
+
+        // 创建超时控制器
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 55000); // 55秒超时
 
         const proxyResponse = await fetch(`${baseUrl}/api/proxy/glm`, {
           method: 'POST',
@@ -258,7 +282,10 @@ ${text}
             model: 'glm-4.5',
             content: prompt
           }),
+          signal: controller.signal
         });
+
+        clearTimeout(timeoutId); // 清除超时计时器
 
         if (proxyResponse.ok) {
           const proxyData = await proxyResponse.json();
@@ -340,7 +367,12 @@ ${text}
 
       } catch (proxyError) {
         console.error('❌ GLM代理调用异常:', proxyError);
-        apiCallTime = '❌ GLM代理调用异常';
+        if (isTimeoutError(proxyError)) {
+          console.log('⏰ 代理调用超时，将使用智能回退解析');
+          apiCallTime = '⏰ 代理调用超时，使用智能回退';
+        } else {
+          apiCallTime = '❌ GLM代理调用异常';
+        }
       }
     }
 
@@ -350,6 +382,9 @@ ${text}
       slides = smartFallbackParsing(text);
       if (!apiCallTime) apiCallTime = '⚠️ 使用智能回退解析';
     }
+
+    // 检测是否使用了超时回退
+    const isTimeoutFallback = apiCallTime?.includes('超时') && !usedAI;
 
     // 验证和清理数据
     const validatedSlides = slides.map((slide, index) => {
@@ -413,7 +448,9 @@ ${text}
       },
       message: usedAI
         ? `✨ AI 解析成功！生成了 ${validatedSlides.length} 张高质量幻灯片`
-        : `⚠️ 使用智能回退解析（网络原因），生成了 ${validatedSlides.length} 张幻灯片`
+        : isTimeoutFallback
+        ? `⏰ AI服务响应超时，已自动使用智能解析生成了 ${validatedSlides.length} 张幻灯片`
+        : `⚠️ 使用智能回退解析生成了 ${validatedSlides.length} 张幻灯片`
     });
 
   } catch (error) {
